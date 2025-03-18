@@ -5,16 +5,16 @@ WORKDIR /src
 # Copy the entire solution
 COPY . .
 
-# Restore dependencies using solution file
-RUN dotnet restore UserService.sln
+# Restore dependencies using solution file with --force to ignore conflicts
+RUN dotnet restore UserService.sln --force
 
 # Build the solution
-RUN dotnet build UserService.sln -c Release -o /app/build
+RUN dotnet build UserService.sln -c Release --no-restore -o /app/build
 
 # Publish stage
 FROM build AS publish
 WORKDIR "/src"
-RUN dotnet publish UserService.sln -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish UserService.sln -c Release --no-restore -o /app/publish /p:UseAppHost=false
 
 # Final stage - using SDK image to ensure migration tools are available
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS final
@@ -39,18 +39,13 @@ RUN dotnet tool install --global dotnet-ef
 # Add dotnet tools to PATH
 ENV PATH="${PATH}:/root/.dotnet/tools"
 
-# Create comprehensive entrypoint script
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Wait for PostgreSQL to be ready\n\
-until pg_isready -h postgres -p 5432 -U postgres; do\n\
-  echo "Waiting for postgres to be ready..."\n\
-  sleep 2\n\
-done\n\
-\n\
-# Start the application\n\
-dotnet UserService.API.dll' > /app/entrypoint.sh
+# Create entrypoint script
+RUN echo '#!/bin/bash' > /app/entrypoint.sh && \
+    echo 'until pg_isready -h postgres -p 5432 -U postgres; do' >> /app/entrypoint.sh && \
+    echo '  echo "Waiting for postgres to be ready..."' >> /app/entrypoint.sh && \
+    echo '  sleep 2' >> /app/entrypoint.sh && \
+    echo 'done' >> /app/entrypoint.sh && \
+    echo 'dotnet UserService.API.dll' >> /app/entrypoint.sh
 
 # Make the entrypoint script executable
 RUN chmod +x /app/entrypoint.sh
