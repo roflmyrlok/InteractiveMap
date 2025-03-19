@@ -60,14 +60,29 @@ public class ReviewsController : ControllerBase
     {
         try
         {
+            // Log all available claims to help with debugging
+            _logger.LogInformation("Authorization header present: {hasAuth}", Request.Headers.ContainsKey("Authorization"));
+            _logger.LogInformation("Claims found in token: {claimCount}", User.Claims.Count());
+            foreach (var claim in User.Claims)
+            {
+                _logger.LogInformation("Claim: {type} = {value}", claim.Type, claim.Value);
+            }
+            
             var userId = JwtHelper.GetUserIdFromToken(User);
+            _logger.LogInformation("Successfully extracted user ID: {userId}", userId);
+            
             var createdReview = await _reviewService.CreateReviewAsync(createReviewDto, userId);
             return CreatedAtAction(nameof(GetById), new { id = createdReview.Id }, createdReview);
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogWarning(ex, "Unauthorized access attempt");
-            return Unauthorized(new { message = "Invalid authorization token" });
+            _logger.LogWarning(ex, "Unauthorized access attempt: {message}", ex.Message);
+            return Unauthorized(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating review");
+            return StatusCode(500, new { message = "An error occurred while creating the review" });
         }
     }
 
@@ -83,8 +98,13 @@ public class ReviewsController : ControllerBase
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogWarning(ex, "Unauthorized access attempt");
-            return Unauthorized(new { message = "Invalid authorization token" });
+            _logger.LogWarning(ex, "Unauthorized access attempt: {message}", ex.Message);
+            return Unauthorized(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating review");
+            return StatusCode(500, new { message = "An error occurred while updating the review" });
         }
     }
 
@@ -100,8 +120,13 @@ public class ReviewsController : ControllerBase
         }
         catch (UnauthorizedAccessException ex)
         {
-            _logger.LogWarning(ex, "Unauthorized access attempt");
-            return Unauthorized(new { message = "Invalid authorization token" });
+            _logger.LogWarning(ex, "Unauthorized access attempt: {message}", ex.Message);
+            return Unauthorized(new { message = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting review");
+            return StatusCode(500, new { message = "An error occurred while deleting the review" });
         }
     }
 }
