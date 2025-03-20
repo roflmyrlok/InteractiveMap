@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 # Copy the entire solution
@@ -12,12 +12,12 @@ RUN dotnet restore LocationService.sln
 RUN dotnet build LocationService.API/LocationService.API.csproj -c Release -o /app/build
 
 # Publish stage
-FROM build AS publish
+FROM --platform=linux/amd64 build AS publish
 WORKDIR "/src"
 RUN dotnet publish LocationService.API/LocationService.API.csproj -c Release -o /app/publish /p:UseAppHost=false
 
 # Final stage - using SDK image to ensure migration tools are available
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS final
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:8.0 AS final
 WORKDIR /app
 
 # Set environment variables
@@ -39,13 +39,13 @@ RUN dotnet tool install --global dotnet-ef
 # Add dotnet tools to PATH
 ENV PATH="${PATH}:/root/.dotnet/tools"
 
-# Create entrypoint script
-RUN echo '#!/bin/bash' > /app/entrypoint.sh && \
-    echo 'until pg_isready -h postgres -p 5432 -U postgres; do' >> /app/entrypoint.sh && \
-    echo '  echo "Waiting for postgres to be ready..."' >> /app/entrypoint.sh && \
-    echo '  sleep 2' >> /app/entrypoint.sh && \
-    echo 'done' >> /app/entrypoint.sh && \
-    echo 'dotnet LocationService.API.dll' >> /app/entrypoint.sh
+# Create entrypoint script directly with proper line endings
+RUN printf '#!/bin/bash\n\
+until pg_isready -h postgres -p 5432 -U postgres; do\n\
+  echo "Waiting for postgres to be ready..."\n\
+  sleep 2\n\
+done\n\
+dotnet LocationService.API.dll\n' > /app/entrypoint.sh
 
 # Make the entrypoint script executable
 RUN chmod +x /app/entrypoint.sh
@@ -53,5 +53,5 @@ RUN chmod +x /app/entrypoint.sh
 # Expose the port the app runs on
 EXPOSE 8080
 
-# Set the entrypoint
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Set the entrypoint using shell format
+ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]

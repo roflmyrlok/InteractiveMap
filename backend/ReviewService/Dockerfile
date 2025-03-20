@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 # Copy the entire solution
@@ -12,12 +12,12 @@ RUN dotnet restore ReviewService.sln
 RUN dotnet build ReviewService.API/ReviewService.API.csproj -c Release -o /app/build
 
 # Publish stage
-FROM build AS publish
+FROM --platform=linux/amd64 build AS publish
 WORKDIR "/src"
 RUN dotnet publish ReviewService.API/ReviewService.API.csproj -c Release -o /app/publish /p:UseAppHost=false
 
 # Final stage - using SDK image to ensure migration tools are available
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS final
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:8.0 AS final
 WORKDIR /app
 
 # Set environment variables
@@ -33,21 +33,23 @@ RUN apt-get update && \
 COPY --from=publish /src .
 COPY --from=publish /app/publish .
 
-# Create entrypoint script with service dependency checks
-RUN echo '#!/bin/bash' > /app/entrypoint.sh && \
-    echo 'until pg_isready -h postgres -p 5432 -U postgres; do' >> /app/entrypoint.sh && \
-    echo '  echo "Waiting for postgres to be ready..."' >> /app/entrypoint.sh && \
-    echo '  sleep 2' >> /app/entrypoint.sh && \
-    echo 'done' >> /app/entrypoint.sh && \
-    echo 'echo "Checking if LocationService is reachable..."' >> /app/entrypoint.sh && \
-    echo 'until curl -f -s -o /dev/null http://locationservice:8080/health || [ $? -eq 22 ]; do' >> /app/entrypoint.sh && \
-    echo '  echo "Waiting for LocationService to be ready..."' >> /app/entrypoint.sh && \
-    echo '  sleep 2' >> /app/entrypoint.sh && \
-    echo 'done' >> /app/entrypoint.sh && \
-    echo 'echo "Starting ReviewService..."' >> /app/entrypoint.sh && \
-    echo 'dotnet ReviewService.API.dll' >> /app/entrypoint.sh && \
-    chmod +x /app/entrypoint.sh
+# Create entrypoint script directly with proper line endings
+RUN printf '#!/bin/bash\n\
+until pg_isready -h postgres -p 5432 -U postgres; do\n\
+  echo "Waiting for postgres to be ready..."\n\
+  sleep 2\n\
+done\n\
+echo "Checking if LocationService is reachable..."\n\
+until curl -f -s -o /dev/null http://locationservice:8080/health || [ $? -eq 22 ]; do\n\
+  echo "Waiting for LocationService to be ready..."\n\
+  sleep 2\n\
+done\n\
+echo "Starting ReviewService..."\n\
+dotnet ReviewService.API.dll\n' > /app/entrypoint.sh
+
+# Make the entrypoint script executable
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]
