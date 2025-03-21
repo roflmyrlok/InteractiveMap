@@ -35,15 +35,24 @@ COPY --from=publish /app/publish .
 
 # Create entrypoint script directly with proper line endings
 RUN printf '#!/bin/bash\n\
-until pg_isready -h postgres -p 5432 -U postgres; do\n\
-  echo "Waiting for postgres to be ready..."\n\
-  sleep 2\n\
+# Extract host from the connection string\n\
+DB_HOST=$(echo $ConnectionStrings__DefaultConnection | grep -o "Host=[^;]*" | cut -d= -f2)\n\
+DB_PORT=$(echo $ConnectionStrings__DefaultConnection | grep -o "Port=[^;]*" | cut -d= -f2)\n\
+DB_USER=$(echo $ConnectionStrings__DefaultConnection | grep -o "Username=[^;]*" | cut -d= -f2)\n\
+\n\
+echo "Waiting for database to be ready at $DB_HOST:$DB_PORT..."\n\
+until pg_isready -h $DB_HOST -p $DB_PORT -U $DB_USER; do\n\
+  echo "Waiting for database to be ready..."\n\
+  sleep 5\n\
 done\n\
+\n\
+# Check for LocationService using service discovery\n\
 echo "Checking if LocationService is reachable..."\n\
 until curl -f -s -o /dev/null http://locationservice:8080/health || [ $? -eq 22 ]; do\n\
   echo "Waiting for LocationService to be ready..."\n\
   sleep 2\n\
 done\n\
+\n\
 echo "Starting ReviewService..."\n\
 dotnet ReviewService.API.dll\n' > /app/entrypoint.sh
 
