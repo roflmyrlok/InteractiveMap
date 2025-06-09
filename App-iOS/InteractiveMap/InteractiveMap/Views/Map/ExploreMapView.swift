@@ -70,20 +70,37 @@ struct ExploreMapView: View {
                                 alignment: .top
                             )
                             
-                            Button(action: {
-                                searchTextFocused = true
-                                showSearchResults = true
-                                keepSearchResultsVisible = true
-                            }) {
-                                Image(systemName: "list.bullet.circle.fill")
-                                    .font(.title2)
-                                    .foregroundColor(.blue)
-                                    .padding(10)
-                                    .background(Color.white)
-                                    .clipShape(Circle())
-                                    .shadow(color: Color.black.opacity(0.2), radius: 5)
+                            // Search results toggle button - moved from navigation bar
+                            if !searchManager.searchText.isEmpty || !networkMonitor.isConnected {
+                                Button(action: {
+                                    showSearchResults.toggle()
+                                    keepSearchResultsVisible = showSearchResults
+                                }) {
+                                    Image(systemName: showSearchResults ? "list.bullet.circle.fill" : "list.bullet.circle")
+                                        .font(.title2)
+                                        .foregroundColor(.blue)
+                                        .padding(10)
+                                        .background(Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.2), radius: 5)
+                                }
+                                .padding(.trailing)
+                            } else {
+                                Button(action: {
+                                    searchTextFocused = true
+                                    showSearchResults = true
+                                    keepSearchResultsVisible = true
+                                }) {
+                                    Image(systemName: "list.bullet.circle.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.blue)
+                                        .padding(10)
+                                        .background(Color.white)
+                                        .clipShape(Circle())
+                                        .shadow(color: Color.black.opacity(0.2), radius: 5)
+                                }
+                                .padding(.trailing)
                             }
-                            .padding(.trailing)
                         }
                     }
                     .padding(.top, 10)
@@ -154,29 +171,16 @@ struct ExploreMapView: View {
             .navigationTitle("Explore")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing:
-                HStack {
-                    // Search results toggle button
-                    if !searchManager.searchText.isEmpty || !networkMonitor.isConnected {
-                        Button(action: {
-                            showSearchResults.toggle()
-                            keepSearchResultsVisible = showSearchResults
-                        }) {
-                            Image(systemName: showSearchResults ? "list.bullet.circle.fill" : "list.bullet.circle")
-                                .foregroundColor(.blue)
-                        }
-                    }
-                    
-                    Button(action: {
-                        showingOfflineSearch = true
-                    }) {
-                        HStack {
-                            Image(systemName: "externaldrive")
+                Button(action: {
+                    showingOfflineSearch = true
+                }) {
+                    HStack {
+                        Image(systemName: "externaldrive")
+                            .foregroundColor(.red)
+                        if !networkMonitor.isConnected {
+                            Text("Offline")
+                                .font(.caption)
                                 .foregroundColor(.red)
-                            if !networkMonitor.isConnected {
-                                Text("Offline")
-                                    .font(.caption)
-                                    .foregroundColor(.red)
-                            }
                         }
                     }
                 }
