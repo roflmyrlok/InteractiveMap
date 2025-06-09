@@ -51,6 +51,7 @@ struct ReviewCardView: View {
     private func formatDate(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
+        formatter.timeStyle = .none
         return formatter.string(from: date)
     }
 }
@@ -106,6 +107,7 @@ struct FullscreenImageView: View {
                     .aspectRatio(contentMode: .fit)
                     .edgesIgnoringSafeArea(.all)
             }
+            .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing: Button("Done") {
                 presentationMode.wrappedValue.dismiss()
             })

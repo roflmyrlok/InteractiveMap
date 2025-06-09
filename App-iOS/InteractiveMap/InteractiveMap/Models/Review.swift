@@ -30,14 +30,95 @@ struct Review: Codable, Identifiable {
         content = try container.decode(String.self, forKey: .content)
         imageUrls = try container.decodeIfPresent([String].self, forKey: .imageUrls) ?? []
         
-        let dateFormatter = ISO8601DateFormatter()
         let createdAtString = try container.decode(String.self, forKey: .createdAt)
-        createdAt = dateFormatter.date(from: createdAtString) ?? Date()
+        let updatedAtString = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         
-        if let updatedAtString = try container.decodeIfPresent(String.self, forKey: .updatedAt) {
-            updatedAt = dateFormatter.date(from: updatedAtString)
+        // Multiple date formatters to handle different backend date formats
+        let formatters: [DateFormatter] = [
+            {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+                formatter.timeZone = TimeZone(abbreviation: "UTC")
+                return formatter
+            }(),
+            {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+                formatter.timeZone = TimeZone(abbreviation: "UTC")
+                return formatter
+            }(),
+            {
+                let formatter = DateFormatter()
+                formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+                formatter.timeZone = TimeZone(abbreviation: "UTC")
+                return formatter
+            }()
+        ]
+        
+        // Try parsing createdAt with multiple formatters
+        var parsedCreatedAt: Date?
+        for formatter in formatters {
+            if let date = formatter.date(from: createdAtString) {
+                parsedCreatedAt = date
+                break
+            }
+        }
+        
+        // Fallback to ISO8601DateFormatter
+        if parsedCreatedAt == nil {
+            let iso8601Formatter = ISO8601DateFormatter()
+            iso8601Formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            parsedCreatedAt = iso8601Formatter.date(from: createdAtString)
+        }
+        
+        createdAt = parsedCreatedAt ?? Date()
+        
+        // Handle updatedAt with same logic
+        if let updatedAtString = updatedAtString {
+            var parsedUpdatedAt: Date?
+            for formatter in formatters {
+                if let date = formatter.date(from: updatedAtString) {
+                    parsedUpdatedAt = date
+                    break
+                }
+            }
+            
+            if parsedUpdatedAt == nil {
+                let iso8601Formatter = ISO8601DateFormatter()
+                iso8601Formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                parsedUpdatedAt = iso8601Formatter.date(from: updatedAtString)
+            }
+            
+            updatedAt = parsedUpdatedAt
         } else {
             updatedAt = nil
+        }
+        
+        // Debug logging to help identify date parsing issues
+        if parsedCreatedAt == nil {
+            print("WARNING: Failed to parse createdAt date: \(createdAtString)")
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(locationId, forKey: .locationId)
+        try container.encode(rating, forKey: .rating)
+        try container.encode(content, forKey: .content)
+        try container.encode(imageUrls, forKey: .imageUrls)
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'"
+        dateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+        
+        try container.encode(dateFormatter.string(from: createdAt), forKey: .createdAt)
+        
+        if let updatedAt = updatedAt {
+            try container.encode(dateFormatter.string(from: updatedAt), forKey: .updatedAt)
+        } else {
+            try container.encodeNil(forKey: .updatedAt)
         }
     }
 }
