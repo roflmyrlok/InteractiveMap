@@ -16,6 +16,7 @@ class MapViewModel: ObservableObject {
     
     private let locationService = LocationService()
     private let cacheManager = CacheManager.shared
+    private let networkMonitor = NetworkMonitor.shared
     private let maxLocations = 10
     
     func loadNearbyLocations(latitude: Double, longitude: Double) {
@@ -58,9 +59,10 @@ class MapViewModel: ObservableObject {
                         self?.cacheManager.cacheLocation(location)
                     }
                     
-                    // Limit to maxLocations
-                    let limitedLocations = Array(locations.prefix(self?.maxLocations ?? 10))
-                    print("Displaying \(limitedLocations.count) locations (limited)")
+                    // UPDATED: Only limit to maxLocations when online
+                    let limitedLocations = self?.networkMonitor.isConnected == true ?
+                        Array(locations.prefix(self?.maxLocations ?? 10)) : locations
+                    print("Displaying \(limitedLocations.count) locations")
                     
                     self?.locations = limitedLocations
                 } else {
@@ -81,6 +83,13 @@ class MapViewModel: ObservableObject {
         return cacheManager.getCachedLocations()
     }
     
+    // UPDATED: New method to load all cached locations without limit
+    func loadAllCachedLocations() {
+        let cachedLocations = cacheManager.getCachedLocations()
+        print("Loading all \(cachedLocations.count) cached locations for offline mode")
+        self.locations = cachedLocations
+    }
+    
     func loadCachedLocationsIfAvailable(near coordinate: CLLocationCoordinate2D, radius: Double = 1.0) {
         let cachedLocations = cacheManager.getCachedLocations()
         
@@ -95,7 +104,9 @@ class MapViewModel: ObservableObject {
         
         if !nearbyCache.isEmpty {
             print("Found \(nearbyCache.count) cached locations nearby")
-            let limitedLocations = Array(nearbyCache.prefix(maxLocations))
+            // UPDATED: Don't limit cached locations when offline
+            let limitedLocations = networkMonitor.isConnected ?
+                Array(nearbyCache.prefix(maxLocations)) : nearbyCache
             self.locations = limitedLocations
         }
     }

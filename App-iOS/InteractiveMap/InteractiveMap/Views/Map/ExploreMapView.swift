@@ -175,13 +175,13 @@ struct ExploreMapView: View {
                     showingOfflineSearch = true
                 }) {
                     HStack {
-                        Image(systemName: "externaldrive")
-                            .foregroundColor(.red)
-                        if !networkMonitor.isConnected {
-                            Text("Offline")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        }
+                        // FIXED: Changed icon and color based on connection status
+                        Image(systemName: networkMonitor.isConnected ? "wifi" : "externaldrive")
+                            .foregroundColor(networkMonitor.isConnected ? .green : .red)
+                        // FIXED: Changed text based on connection status
+                        Text(networkMonitor.isConnected ? "Online" : "Offline")
+                            .font(.caption)
+                            .foregroundColor(networkMonitor.isConnected ? .green : .red)
                     }
                 }
             )
@@ -207,9 +207,14 @@ struct ExploreMapView: View {
             }
             .onChange(of: networkMonitor.isConnected) { isConnected in
                 if !isConnected {
+                    // FIXED: Load all cached locations when going offline
+                    loadAllCachedLocations()
                     searchManager.refreshCachedLocations()
                     showSearchResults = true
                     keepSearchResultsVisible = true
+                } else {
+                    // When coming back online, refresh nearby locations
+                    findNearbyLocations()
                 }
             }
             .onChange(of: navigationPath) { path in
@@ -228,7 +233,12 @@ struct ExploreMapView: View {
                 cameraPosition = .region(locationManager.region)
                 searchManager.refreshCachedLocations()
                 
-                findNearbyLocations()
+                // FIXED: Check connection status on appear
+                if networkMonitor.isConnected {
+                    findNearbyLocations()
+                } else {
+                    loadAllCachedLocations()
+                }
                 
                 // Show cached locations if offline
                 if !networkMonitor.isConnected {
@@ -264,6 +274,15 @@ struct ExploreMapView: View {
             latitude: coordinates.latitude,
             longitude: coordinates.longitude
         )
+    }
+    
+    // FIXED: New function to load all cached locations for offline mode
+    private func loadAllCachedLocations() {
+        let cachedLocations = CacheManager.shared.getCachedLocations()
+        displayedLocations = cachedLocations
+        viewModel.locations = cachedLocations
+        
+        print("Loaded \(cachedLocations.count) cached locations for offline mode")
     }
     
     private var searchResultsOverlay: some View {
@@ -364,10 +383,12 @@ struct ExploreMapView: View {
                                                     cameraPosition = .region(newRegion)
                                                     
                                                     // Load nearby locations but keep the selected one visible
-                                                    viewModel.loadNearbyLocations(
-                                                        latitude: coordinate.latitude,
-                                                        longitude: coordinate.longitude
-                                                    )
+                                                    if networkMonitor.isConnected {
+                                                        viewModel.loadNearbyLocations(
+                                                            latitude: coordinate.latitude,
+                                                            longitude: coordinate.longitude
+                                                        )
+                                                    }
                                                     
                                                     // Navigate to location detail without dismissing search
                                                     navigationPath.append(result.location)
@@ -450,10 +471,12 @@ struct ExploreMapView: View {
                                             locationManager.region = newRegion
                                             cameraPosition = .region(newRegion)
                                             
-                                            viewModel.loadNearbyLocations(
-                                                latitude: coordinate.latitude,
-                                                longitude: coordinate.longitude
-                                            )
+                                            if networkMonitor.isConnected {
+                                                viewModel.loadNearbyLocations(
+                                                    latitude: coordinate.latitude,
+                                                    longitude: coordinate.longitude
+                                                )
+                                            }
                                             
                                             searchTextFocused = false
                                             // DON'T dismiss search results - this is a map location search
@@ -549,14 +572,18 @@ struct ExploreMapView: View {
                     Spacer()
                     
                     Button(action: {
-                        findNearbyLocations()
+                        if networkMonitor.isConnected {
+                            findNearbyLocations()
+                        } else {
+                            loadAllCachedLocations()
+                        }
                     }) {
-                        Text("Find Nearby")
+                        Text(networkMonitor.isConnected ? "Find Nearby" : "Show All Cached")
                             .fontWeight(.semibold)
                             .foregroundColor(.white)
                             .padding(.vertical, 12)
                             .padding(.horizontal, 24)
-                            .background(Color.blue)
+                            .background(networkMonitor.isConnected ? Color.blue : Color.red)
                             .cornerRadius(20)
                             .shadow(color: Color.black.opacity(0.2), radius: 5)
                     }
@@ -570,13 +597,15 @@ struct ExploreMapView: View {
         VStack {
             if displayedLocations.isEmpty && !viewModel.isLoading {
                 VStack(spacing: 16) {
-                    Text("No locations found")
+                    Text(networkMonitor.isConnected ? "No locations found" : "No cached locations available")
                         .font(.subheadline)
                         .foregroundColor(.gray)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 40)
                     
-                    Text("Try searching for a different area or use 'Find Nearby' to discover locations around you.")
+                    Text(networkMonitor.isConnected ?
+                         "Try searching for a different area or use 'Find Nearby' to discover locations around you." :
+                         "Visit locations while online to cache them for offline viewing.")
                         .font(.caption)
                         .foregroundColor(.gray)
                         .multilineTextAlignment(.center)
@@ -584,7 +613,12 @@ struct ExploreMapView: View {
                 }
             } else {
                 VStack {
-                    if displayedLocations.count == 10 {
+                    if !networkMonitor.isConnected {
+                        Text("Showing all \(displayedLocations.count) cached locations")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .padding(.top, 8)
+                    } else if displayedLocations.count == 10 {
                         Text("Showing top 10 locations")
                             .font(.caption)
                             .foregroundColor(.gray)
