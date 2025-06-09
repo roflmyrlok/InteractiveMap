@@ -10,16 +10,52 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     @Published var isSearching = false
     @Published var locationSearchResults: [LocationSearchResult] = []
     @Published var isOfflineMode = false
+    @Published var allCachedLocations: [LocationSearchResult] = []
     
     private var cancellables = Set<AnyCancellable>()
     private let searchCompleter = MKLocalSearchCompleter()
     private let locationService = LocationService()
     private let cacheManager = CacheManager.shared
+    private let networkMonitor = NetworkMonitor.shared
     
     override init() {
         super.init()
         setupSearchCompleter()
         setupSearchDebounce()
+        setupNetworkMonitoring()
+        loadAllCachedLocations()
+    }
+    
+    private func setupNetworkMonitoring() {
+        networkMonitor.$isConnected
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isConnected in
+                self?.isOfflineMode = !isConnected
+                if !isConnected {
+                    self?.showAllCachedLocationsWhenOffline()
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func loadAllCachedLocations() {
+        let cachedLocations = cacheManager.getCachedLocations()
+        allCachedLocations = cachedLocations.map { location in
+            LocationSearchResult(
+                location: location,
+                title: getLocationDisplayName(location),
+                subtitle: location.address,
+                isCached: true
+            )
+        }
+    }
+    
+    private func showAllCachedLocationsWhenOffline() {
+        if !networkMonitor.isConnected {
+            locationSearchResults = allCachedLocations
+            searchResults = []
+            isOfflineMode = true
+        }
     }
     
     private func setupSearchCompleter() {
@@ -34,7 +70,7 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     
     private func setupSearchDebounce() {
         $searchText
-            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .debounce(for: .milliseconds(800), scheduler: RunLoop.main)
             .sink { [weak self] text in
                 self?.handleSearchTextChange(text)
             }
@@ -42,17 +78,31 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     }
     
     private func handleSearchTextChange(_ text: String) {
+        // Update offline mode based on network status
+        isOfflineMode = !networkMonitor.isConnected
+        
+        // If offline, always show cached locations
+        if !networkMonitor.isConnected {
+            if text.isEmpty {
+                locationSearchResults = allCachedLocations
+            } else {
+                searchCachedLocations(query: text)
+            }
+            searchResults = []
+            isSearching = false
+            return
+        }
+        
+        // Online behavior
         if text.isEmpty {
             searchResults = []
             locationSearchResults = []
             isSearching = false
-            isOfflineMode = false
             return
         }
         
         if text.count > 2 {
             isSearching = true
-            isOfflineMode = false
             
             // Always search cached locations first for instant results
             searchCachedLocations(query: text)
@@ -60,52 +110,48 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
             // Then try network search for map places
             searchCompleter.queryFragment = text
             
-            // And search our live locations if online
+            // And search our live locations
             searchOurLocations(query: text)
         } else {
             searchResults = []
             locationSearchResults = []
             isSearching = false
-            isOfflineMode = false
         }
     }
     
     private func searchCachedLocations(query: String) {
-        let cachedLocations = cacheManager.getCachedLocations()
-        let filteredLocations = cachedLocations.filter { location in
+        let filteredLocations = allCachedLocations.filter { result in
             let searchQuery = query.lowercased()
             
-            let addressMatch = location.address.lowercased().contains(searchQuery)
+            let titleMatch = result.title.lowercased().contains(searchQuery)
+            let addressMatch = result.subtitle.lowercased().contains(searchQuery)
             
-            let detailsMatch = location.details.contains { detail in
+            let detailsMatch = result.location.details.contains { detail in
                 detail.propertyValue.lowercased().contains(searchQuery) ||
                 detail.propertyName.lowercased().contains(searchQuery)
             }
             
-            return addressMatch || detailsMatch
+            return titleMatch || addressMatch || detailsMatch
         }
         
         // Update UI immediately with cached results
         DispatchQueue.main.async { [weak self] in
-            self?.locationSearchResults = filteredLocations.prefix(5).map { location in
-                LocationSearchResult(
-                    location: location,
-                    title: self?.getLocationDisplayName(location) ?? location.address,
-                    subtitle: location.address,
-                    isCached: true
-                )
-            }
-            
-            // If we only have cached results, we're in offline mode for location search
-            if !filteredLocations.isEmpty {
-                self?.isOfflineMode = true
-            }
+            self?.locationSearchResults = Array(filteredLocations.prefix(20))
         }
     }
     
     private func searchOurLocations(query: String) {
+        // Only search network if we're online
+        guard networkMonitor.isConnected else {
+            isOfflineMode = true
+            isSearching = false
+            return
+        }
+        
         locationService.getLocations { [weak self] locations, error in
             DispatchQueue.main.async {
+                self?.isSearching = false
+                
                 if let locations = locations {
                     let filteredLocations = locations.filter { location in
                         let searchQuery = query.lowercased()
@@ -121,7 +167,7 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
                     }
                     
                     // Merge with cached results, prioritizing fresh network results
-                    let networkResults = filteredLocations.prefix(5).map { location in
+                    let networkResults = filteredLocations.prefix(10).map { location in
                         LocationSearchResult(
                             location: location,
                             title: self?.getLocationDisplayName(location) ?? location.address,
@@ -130,21 +176,20 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
                         )
                     }
                     
-                    // If we got network results, replace cached results
-                    if !networkResults.isEmpty {
-                        self?.locationSearchResults = Array(networkResults)
-                        self?.isOfflineMode = false
+                    // Combine network results with cached results, removing duplicates
+                    let cachedResults = self?.locationSearchResults.filter { $0.isCached } ?? []
+                    let uniqueCachedResults = cachedResults.filter { cachedResult in
+                        !networkResults.contains { networkResult in
+                            networkResult.location.id == cachedResult.location.id
+                        }
                     }
-                    // If network results are empty but we had cached results, keep cached
-                    else if self?.locationSearchResults.isEmpty ?? true {
-                        self?.locationSearchResults = []
-                        self?.isOfflineMode = false
-                    }
+                    
+                    let combinedResults = Array(networkResults) + uniqueCachedResults
+                    self?.locationSearchResults = Array(combinedResults.prefix(20))
+                    self?.isOfflineMode = false
                 } else {
-                    // Network failed - keep cached results if any, mark as offline
-                    if !(self?.locationSearchResults.isEmpty ?? true) {
-                        self?.isOfflineMode = true
-                    }
+                    // Network failed - keep cached results and mark as offline
+                    self?.isOfflineMode = true
                 }
             }
         }
@@ -161,6 +206,9 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     }
     
     func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        // Only update if we're online
+        guard networkMonitor.isConnected else { return }
+        
         let mapResults = completer.results.prefix(5)
         self.searchResults = Array(mapResults)
         self.isSearching = false
@@ -168,7 +216,6 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     
     func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
         print("Map search failed with error: \(error.localizedDescription)")
-        // Don't clear location search results - those might be from cache
         self.searchResults = []
         self.isSearching = false
     }
@@ -199,36 +246,54 @@ class SearchManager: NSObject, ObservableObject, MKLocalSearchCompleterDelegate 
     
     func clearSearch() {
         searchText = ""
+        
+        // Don't clear everything if we're offline
+        if !networkMonitor.isConnected {
+            locationSearchResults = allCachedLocations
+            isOfflineMode = true
+        } else {
+            locationSearchResults = []
+            isOfflineMode = false
+        }
+        
         searchResults = []
-        locationSearchResults = []
         isSearching = false
-        isOfflineMode = false
     }
     
     // MARK: - Offline Search Only
     
     func searchOfflineOnly(query: String) -> [LocationSearchResult] {
-        let cachedLocations = cacheManager.getCachedLocations()
-        let filteredLocations = cachedLocations.filter { location in
+        if query.isEmpty {
+            return allCachedLocations
+        }
+        
+        return allCachedLocations.filter { result in
             let searchQuery = query.lowercased()
             
-            let addressMatch = location.address.lowercased().contains(searchQuery)
+            let titleMatch = result.title.lowercased().contains(searchQuery)
+            let addressMatch = result.subtitle.lowercased().contains(searchQuery)
             
-            let detailsMatch = location.details.contains { detail in
+            let detailsMatch = result.location.details.contains { detail in
                 detail.propertyValue.lowercased().contains(searchQuery) ||
                 detail.propertyName.lowercased().contains(searchQuery)
             }
             
-            return addressMatch || detailsMatch
+            return titleMatch || addressMatch || detailsMatch
         }
+    }
+    
+    // MARK: - Public Methods
+    
+    func refreshCachedLocations() {
+        loadAllCachedLocations()
         
-        return filteredLocations.map { location in
-            LocationSearchResult(
-                location: location,
-                title: getLocationDisplayName(location),
-                subtitle: location.address,
-                isCached: true
-            )
+        // If we're offline or searching, update the results
+        if !networkMonitor.isConnected || searchText.isEmpty {
+            if searchText.isEmpty {
+                locationSearchResults = allCachedLocations
+            } else {
+                searchCachedLocations(query: searchText)
+            }
         }
     }
 }

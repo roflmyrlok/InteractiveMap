@@ -7,6 +7,7 @@ struct ExploreMapView: View {
     @StateObject private var locationManager = LocationManager()
     @StateObject private var viewModel = MapViewModel()
     @StateObject private var searchManager = SearchManager()
+    @StateObject private var networkMonitor = NetworkMonitor.shared
     @State private var selectedTab = 0
     @State private var showSearchResults = false
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -15,6 +16,9 @@ struct ExploreMapView: View {
     @State private var selectedLocation: Location?
     @State private var navigationPath = NavigationPath()
     @State private var showingOfflineSearch = false
+    @State private var searchTextFocused = false
+    @State private var keepSearchResultsVisible = false
+    @State private var displayedLocations: [Location] = []
     
     private let kyivCoordinates = CLLocationCoordinate2D(latitude: 50.4501, longitude: 30.5234)
     
@@ -31,15 +35,20 @@ struct ExploreMapView: View {
                                 TextField("Search locations or shelters", text: $searchManager.searchText)
                                     .foregroundColor(.black)
                                     .onTapGesture {
-                                        if !searchManager.searchText.isEmpty {
-                                            showSearchResults = true
-                                        }
+                                        searchTextFocused = true
+                                        showSearchResults = true
+                                        keepSearchResultsVisible = true
+                                    }
+                                    .onSubmit {
+                                        searchTextFocused = false
                                     }
                                 
                                 if !searchManager.searchText.isEmpty {
                                     Button(action: {
                                         searchManager.clearSearch()
+                                        searchTextFocused = false
                                         showSearchResults = false
+                                        keepSearchResultsVisible = false
                                     }) {
                                         Image(systemName: "xmark.circle.fill")
                                             .foregroundColor(.gray)
@@ -62,19 +71,11 @@ struct ExploreMapView: View {
                             )
                             
                             Button(action: {
-                                if let location = locationManager.location {
-                                    locationManager.updateRegion(location: location)
-                                    cameraPosition = .region(locationManager.region)
-                                } else {
-                                    let kyivRegion = MKCoordinateRegion(
-                                        center: kyivCoordinates,
-                                        span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
-                                    )
-                                    locationManager.region = kyivRegion
-                                    cameraPosition = .region(kyivRegion)
-                                }
+                                searchTextFocused = true
+                                showSearchResults = true
+                                keepSearchResultsVisible = true
                             }) {
-                                Image(systemName: "location.circle.fill")
+                                Image(systemName: "list.bullet.circle.fill")
                                     .font(.title2)
                                     .foregroundColor(.blue)
                                     .padding(10)
@@ -116,18 +117,7 @@ struct ExploreMapView: View {
                             }
                             
                             Button(action: {
-                                let coordinates: CLLocationCoordinate2D
-                                
-                                if let location = locationManager.location {
-                                    coordinates = location.coordinate
-                                } else {
-                                    coordinates = kyivCoordinates
-                                }
-                                
-                                viewModel.loadNearbyLocations(
-                                    latitude: coordinates.latitude,
-                                    longitude: coordinates.longitude
-                                )
+                                findNearbyLocations()
                             }) {
                                 Text("Find Nearby")
                                     .fontWeight(.semibold)
@@ -144,7 +134,10 @@ struct ExploreMapView: View {
                     }
                 }
                 .onTapGesture {
-                    showSearchResults = false
+                    // Only dismiss search results if user taps outside and search is not focused
+                    if !searchTextFocused && !keepSearchResultsVisible {
+                        showSearchResults = false
+                    }
                     selectedLocation = nil
                 }
                 
@@ -161,11 +154,31 @@ struct ExploreMapView: View {
             .navigationTitle("Explore")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarItems(trailing:
-                Button(action: {
-                    showingOfflineSearch = true
-                }) {
-                    Image(systemName: "externaldrive")
-                        .foregroundColor(.red)
+                HStack {
+                    // Search results toggle button
+                    if !searchManager.searchText.isEmpty || !networkMonitor.isConnected {
+                        Button(action: {
+                            showSearchResults.toggle()
+                            keepSearchResultsVisible = showSearchResults
+                        }) {
+                            Image(systemName: showSearchResults ? "list.bullet.circle.fill" : "list.bullet.circle")
+                                .foregroundColor(.blue)
+                        }
+                    }
+                    
+                    Button(action: {
+                        showingOfflineSearch = true
+                    }) {
+                        HStack {
+                            Image(systemName: "externaldrive")
+                                .foregroundColor(.red)
+                            if !networkMonitor.isConnected {
+                                Text("Offline")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    }
                 }
             )
             .sheet(isPresented: $showingOfflineSearch) {
@@ -175,44 +188,134 @@ struct ExploreMapView: View {
                 LocationDetailView(location: location, isAuthenticated: TokenManager.shared.isAuthenticated)
             }
             .onChange(of: searchManager.searchText) { newValue in
-                showSearchResults = !newValue.isEmpty
+                if !newValue.isEmpty || !networkMonitor.isConnected {
+                    showSearchResults = true
+                    keepSearchResultsVisible = true
+                } else {
+                    keepSearchResultsVisible = false
+                }
+            }
+            .onChange(of: searchManager.isOfflineMode) { isOffline in
+                if isOffline {
+                    showSearchResults = true
+                    keepSearchResultsVisible = true
+                }
+            }
+            .onChange(of: networkMonitor.isConnected) { isConnected in
+                if !isConnected {
+                    searchManager.refreshCachedLocations()
+                    showSearchResults = true
+                    keepSearchResultsVisible = true
+                }
+            }
+            .onChange(of: navigationPath) { path in
+                // When returning from location detail, restore search results if there was an active search
+                if path.isEmpty && (!searchManager.searchText.isEmpty || !networkMonitor.isConnected) {
+                    showSearchResults = keepSearchResultsVisible
+                }
+            }
+            .onChange(of: viewModel.locations) { newLocations in
+                // Persist displayed locations - don't clear them when navigating
+                if !newLocations.isEmpty {
+                    displayedLocations = newLocations
+                }
             }
             .onAppear {
                 cameraPosition = .region(locationManager.region)
+                searchManager.refreshCachedLocations()
                 
-                if let location = locationManager.location {
-                    viewModel.loadNearbyLocations(
-                        latitude: location.coordinate.latitude,
-                        longitude: location.coordinate.longitude
-                    )
-                } else {
-                    viewModel.loadNearbyLocations(
-                        latitude: kyivCoordinates.latitude,
-                        longitude: kyivCoordinates.longitude
-                    )
-                    
-                    locationManager.region = MKCoordinateRegion(
-                        center: kyivCoordinates,
-                        span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
-                    )
+                findNearbyLocations()
+                
+                // Show cached locations if offline
+                if !networkMonitor.isConnected {
+                    showSearchResults = true
+                    keepSearchResultsVisible = true
                 }
             }
         }
     }
     
+    private func findNearbyLocations() {
+        let coordinates: CLLocationCoordinate2D
+        
+        // Try to use user's location first, then fall back to Kyiv
+        if let location = locationManager.location {
+            coordinates = location.coordinate
+            // Update map to user's location
+            locationManager.updateRegion(location: location)
+            cameraPosition = .region(locationManager.region)
+        } else {
+            coordinates = kyivCoordinates
+            // Update map to Kyiv
+            let kyivRegion = MKCoordinateRegion(
+                center: kyivCoordinates,
+                span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+            )
+            locationManager.region = kyivRegion
+            cameraPosition = .region(kyivRegion)
+        }
+        
+        // Load nearby locations
+        viewModel.loadNearbyLocations(
+            latitude: coordinates.latitude,
+            longitude: coordinates.longitude
+        )
+    }
+    
     private var searchResultsOverlay: some View {
         VStack {
-            if showSearchResults && (!searchManager.searchResults.isEmpty || !searchManager.locationSearchResults.isEmpty || searchManager.isSearching) {
+            let hasResults = !searchManager.locationSearchResults.isEmpty || !searchManager.searchResults.isEmpty
+            let shouldShow = showSearchResults && (hasResults || searchManager.isSearching || !networkMonitor.isConnected)
+            
+            if shouldShow {
                 VStack(spacing: 0) {
-                    if searchManager.isSearching {
-                        HStack {
-                            Text("Searching...")
+                    // Header with close button
+                    HStack {
+                        if searchManager.isSearching {
+                            HStack {
+                                Text("Searching...")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            }
+                        } else if hasResults {
+                            Text("Search Results")
                                 .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            showSearchResults = false
+                            keepSearchResultsVisible = false
+                            searchTextFocused = false
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
                                 .foregroundColor(.gray)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(Color.gray.opacity(0.1))
+                    
+                    // Offline indicator
+                    if !networkMonitor.isConnected {
+                        HStack {
+                            Image(systemName: "wifi.slash")
+                                .foregroundColor(.red)
+                                .font(.caption)
+                            Text("Offline - Showing cached locations only")
+                                .font(.caption)
+                                .foregroundColor(.red)
                             Spacer()
                         }
                         .padding(.horizontal)
                         .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.1))
                     }
                     
                     if !searchManager.locationSearchResults.isEmpty {
@@ -227,79 +330,91 @@ struct ExploreMapView: View {
                                     Image(systemName: "wifi.slash")
                                         .font(.caption2)
                                         .foregroundColor(.red)
-                                    Text("Offline")
+                                    Text("Cached")
                                         .font(.caption2)
                                         .foregroundColor(.red)
                                 }
                                 
                                 Spacer()
+                                
+                                Text("\(searchManager.locationSearchResults.count)")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
                             }
                             .padding(.horizontal)
                             .padding(.top, 8)
                             .padding(.bottom, 4)
                             
-                            ForEach(searchManager.locationSearchResults) { result in
-                                Button(action: {
-                                    searchManager.selectLocationResult(result) { coordinate in
-                                        if let coordinate = coordinate {
-                                            searchManager.searchText = result.title
-                                            
-                                            let newRegion = MKCoordinateRegion(
-                                                center: coordinate,
-                                                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                                            )
-                                            locationManager.region = newRegion
-                                            cameraPosition = .region(newRegion)
-                                            
-                                            viewModel.loadNearbyLocations(
-                                                latitude: coordinate.latitude,
-                                                longitude: coordinate.longitude
-                                            )
-                                            
-                                            showSearchResults = false
-                                        }
-                                    }
-                                }) {
-                                    HStack {
-                                        Image(systemName: result.isCached ? "externaldrive" : "building.2.fill")
-                                            .foregroundColor(result.isCached ? .red : .blue)
-                                            .frame(width: 20)
-                                        
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            HStack {
-                                                Text(result.title)
-                                                    .font(.body)
-                                                    .foregroundColor(.black)
-                                                    .multilineTextAlignment(.leading)
-                                                
-                                                if result.isCached {
-                                                    Image(systemName: "wifi.slash")
-                                                        .font(.caption2)
-                                                        .foregroundColor(.red)
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(searchManager.locationSearchResults) { result in
+                                        Button(action: {
+                                            searchManager.selectLocationResult(result) { coordinate in
+                                                if let coordinate = coordinate {
+                                                    // Update map position
+                                                    let newRegion = MKCoordinateRegion(
+                                                        center: coordinate,
+                                                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                                                    )
+                                                    locationManager.region = newRegion
+                                                    cameraPosition = .region(newRegion)
+                                                    
+                                                    // Load nearby locations but keep the selected one visible
+                                                    viewModel.loadNearbyLocations(
+                                                        latitude: coordinate.latitude,
+                                                        longitude: coordinate.longitude
+                                                    )
+                                                    
+                                                    // Navigate to location detail without dismissing search
+                                                    navigationPath.append(result.location)
+                                                    searchTextFocused = false
+                                                    // DON'T dismiss search results - keep them visible
                                                 }
                                             }
-                                            Text(result.subtitle)
-                                                .font(.caption)
-                                                .foregroundColor(.gray)
-                                                .multilineTextAlignment(.leading)
+                                        }) {
+                                            HStack {
+                                                Image(systemName: result.isCached ? "externaldrive" : "building.2.fill")
+                                                    .foregroundColor(result.isCached ? .red : .blue)
+                                                    .frame(width: 20)
+                                                
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    HStack {
+                                                        Text(result.title)
+                                                            .font(.body)
+                                                            .foregroundColor(.black)
+                                                            .multilineTextAlignment(.leading)
+                                                        
+                                                        if result.isCached {
+                                                            Image(systemName: "wifi.slash")
+                                                                .font(.caption2)
+                                                                .foregroundColor(.red)
+                                                        }
+                                                    }
+                                                    Text(result.subtitle)
+                                                        .font(.caption)
+                                                        .foregroundColor(.gray)
+                                                        .multilineTextAlignment(.leading)
+                                                }
+                                                
+                                                Spacer()
+                                            }
+                                            .padding(.vertical, 8)
+                                            .padding(.horizontal)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
                                         }
+                                        .background(result.isCached ? Color.red.opacity(0.05) : Color.blue.opacity(0.05))
                                         
-                                        Spacer()
+                                        if result != searchManager.locationSearchResults.last {
+                                            Divider()
+                                        }
                                     }
-                                    .padding(.vertical, 8)
-                                    .padding(.horizontal)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .background(result.isCached ? Color.red.opacity(0.05) : Color.blue.opacity(0.05))
-                                
-                                if result != searchManager.locationSearchResults.last {
-                                    Divider()
                                 }
                             }
+                            .frame(maxHeight: 300)
                         }
                     }
                     
-                    if !searchManager.searchResults.isEmpty {
+                    if !searchManager.searchResults.isEmpty && networkMonitor.isConnected {
                         if !searchManager.locationSearchResults.isEmpty {
                             Divider()
                                 .background(Color.gray)
@@ -336,7 +451,8 @@ struct ExploreMapView: View {
                                                 longitude: coordinate.longitude
                                             )
                                             
-                                            showSearchResults = false
+                                            searchTextFocused = false
+                                            // DON'T dismiss search results - this is a map location search
                                         }
                                     }
                                 }) {
@@ -374,7 +490,7 @@ struct ExploreMapView: View {
                 .cornerRadius(10)
                 .shadow(color: Color.black.opacity(0.2), radius: 5)
                 .padding(.horizontal)
-                .frame(maxHeight: 400)
+                .frame(maxHeight: 500)
             }
         }
         .offset(y: 50)
@@ -384,6 +500,7 @@ struct ExploreMapView: View {
     private func showLocationDetail(for location: Location) {
         print("Showing location detail for: \(location.id) - \(location.address)")
         navigationPath.append(location)
+        // Don't dismiss search results when navigating to details
     }
     
     private var mapView: some View {
@@ -391,7 +508,8 @@ struct ExploreMapView: View {
             Map(position: $cameraPosition, selection: $selectedLocation) {
                 UserAnnotation()
                 
-                ForEach(viewModel.locations) { location in
+                // Use displayedLocations to persist pins
+                ForEach(displayedLocations) { location in
                     Annotation(
                         location.address,
                         coordinate: CLLocationCoordinate2D(latitude: location.latitude, longitude: location.longitude),
@@ -427,18 +545,7 @@ struct ExploreMapView: View {
                     Spacer()
                     
                     Button(action: {
-                        let coordinates: CLLocationCoordinate2D
-                        
-                        if let location = locationManager.location {
-                            coordinates = location.coordinate
-                        } else {
-                            coordinates = kyivCoordinates
-                        }
-                        
-                        viewModel.loadNearbyLocations(
-                            latitude: coordinates.latitude,
-                            longitude: coordinates.longitude
-                        )
+                        findNearbyLocations()
                     }) {
                         Text("Find Nearby")
                             .fontWeight(.semibold)
@@ -457,7 +564,7 @@ struct ExploreMapView: View {
     
     private var locationListView: some View {
         VStack {
-            if viewModel.locations.isEmpty && !viewModel.isLoading {
+            if displayedLocations.isEmpty && !viewModel.isLoading {
                 VStack(spacing: 16) {
                     Text("No locations found")
                         .font(.subheadline)
@@ -473,7 +580,7 @@ struct ExploreMapView: View {
                 }
             } else {
                 VStack {
-                    if viewModel.locations.count == 10 {
+                    if displayedLocations.count == 10 {
                         Text("Showing top 10 locations")
                             .font(.caption)
                             .foregroundColor(.gray)
@@ -481,7 +588,7 @@ struct ExploreMapView: View {
                     }
                     
                     List {
-                        ForEach(viewModel.locations) { location in
+                        ForEach(displayedLocations) { location in
                             LocationRow(
                                 location: location,
                                 isSelected: selectedLocation?.id == location.id
